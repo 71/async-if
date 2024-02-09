@@ -1,5 +1,5 @@
 [workspace]
-members = ["macro"]
+members = ["async-std-if", "macro"]
 
 [package]
 name = "async-if"

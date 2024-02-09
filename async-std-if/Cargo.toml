@@ -1,0 +1,20 @@
+[package]
+name = "async-std-if"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-if = { path = ".." }
+async-std = { version = "1.12", optional = true }
+tokio = { version = "1.36", optional = true }
+
+[features]
+default = ["std"]
+async-std = ["dep:async-std"]
+std = []
+tokio = ["dep:tokio"]
+tokio-time = ["tokio", "tokio/time"]
+
+[dev-dependencies]
+paste = "1.0"
+tokio = { version = "1.36", features = ["full"] }
