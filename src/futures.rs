@@ -2,12 +2,11 @@ use core::{
     fmt::Debug,
     future::{ready, Future, Ready},
     marker::PhantomData,
-    mem::ManuallyDrop,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use crate::{helpers::poll_expecting_ready, AsyncIf, Asynchronous, IsAsync, Synchronous};
+use crate::{helpers::poll_expecting_ready, AsyncIf, Asynchronous, IsAsync, OneOf, Synchronous};
 
 /// Returns a [`Future`] which implements [`AsyncIf<Asynchronous>`].
 pub fn from_future<F: Future>(future: F) -> impl AsyncIf<Asynchronous, Output = F::Output> {
@@ -124,19 +123,13 @@ impl<F: Future> From<F> for PossiblySyncFuture<Asynchronous, F> {
 }
 
 /// A [`Future`] which behaves like [`Ready`] if `A` is [`Synchronous`], and like `F` otherwise.
-pub union FutureIf<A: IsAsync, F: Future> {
-    if_sync: ManuallyDrop<Option<F::Output>>,
-    if_async: ManuallyDrop<F>,
-    _marker: PhantomData<A>,
-}
+pub struct FutureIf<A: IsAsync, F: Future>(OneOf<A, Option<F::Output>, F>);
 
 impl<F: Future> FutureIf<Synchronous, F> {
     /// Returns a new [`FutureIf`] future which wraps the given `value`, guaranteeing that it can
     /// be run synchronously.
     pub const fn new_sync(value: F::Output) -> Self {
-        Self {
-            if_sync: ManuallyDrop::new(Some(value)),
-        }
+        Self(OneOf::<Synchronous, _, _>::new_sync(Some(value)))
     }
 }
 
@@ -144,9 +137,7 @@ impl<F: Future> FutureIf<Asynchronous, F> {
     /// Returns a new [`FutureIf`] future which wraps the given [`Future`], making no guarantees
     /// on whether or not it can be run synchronously.
     pub const fn new_async(future: F) -> Self {
-        Self {
-            if_async: ManuallyDrop::new(future),
-        }
+        Self(OneOf::<Asynchronous, _, _>::new_async(future))
     }
 }
 
@@ -157,17 +148,19 @@ where
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        // SAFETY: pinning is not structural for `FutureIf`.
+        // See https://doc.rust-lang.org/std/pin/index.html.
+        let data = unsafe { &mut self.get_unchecked_mut().0 };
+
         if A::IS_ASYNC {
-            // SAFETY: pinning is not structural for `FutureIf`.
-            // See https://doc.rust-lang.org/std/pin/index.html.
-            let future = unsafe { &mut *self.get_unchecked_mut().if_async };
+            // SAFETY: checked `A::IS_ASYNC` above.
+            let future = unsafe { data.as_async_mut_unchecked() };
             let future = unsafe { Pin::new_unchecked(future) };
 
             future.poll(cx)
         } else {
-            // SAFETY: pinning is not structural for `FutureIf`.
-            // See https://doc.rust-lang.org/std/pin/index.html.
-            let option = unsafe { &mut *self.get_unchecked_mut().if_sync };
+            // SAFETY: checked `!A::IS_ASYNC` above.
+            let option = unsafe { data.as_sync_mut_unchecked() };
 
             Poll::Ready(option.take().expect("poll() called more than once"))
         }
@@ -185,21 +178,10 @@ where
     where
         Self: Sized,
     {
-        { &mut *self.if_sync }
+        self.0
+            .as_sync_mut_unchecked() // Same SAFETY guarantee as needed to call `get_unchecked()`.
             .take()
             .expect("get() called after poll()")
-    }
-}
-
-impl<A: IsAsync, F: Future> Drop for FutureIf<A, F> {
-    fn drop(&mut self) {
-        if A::IS_ASYNC {
-            // SAFETY: checked `A::IS_ASYNC` above.
-            unsafe { ManuallyDrop::drop(&mut self.if_async) }
-        } else {
-            // SAFETY: checked `!A::IS_ASYNC` above.
-            unsafe { ManuallyDrop::drop(&mut self.if_sync) }
-        }
     }
 }
 
@@ -209,16 +191,9 @@ where
     F::Output: Debug,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        if A::IS_ASYNC {
-            // SAFETY: checked `A::IS_ASYNC` above.
-            let value = unsafe { &*self.if_async };
-
-            f.debug_struct("Map").field("if_async", value).finish()
-        } else {
-            // SAFETY: checked `!A::IS_ASYNC` above.
-            let value = unsafe { &*self.if_sync };
-
-            f.debug_struct("Map").field("if_sync", value).finish()
+        match self.0.as_async() {
+            Ok(value) => f.debug_struct("FutureIf").field("if_async", value).finish(),
+            Err(value) => f.debug_struct("FutureIf").field("if_sync", value).finish(),
         }
     }
 }
@@ -229,21 +204,7 @@ where
     F::Output: Clone,
 {
     fn clone(&self) -> Self {
-        if A::IS_ASYNC {
-            // SAFETY: checked `A::IS_ASYNC` above.
-            let value = unsafe { &*self.if_async };
-
-            FutureIf {
-                if_async: ManuallyDrop::new(value.clone()),
-            }
-        } else {
-            // SAFETY: checked `!A::IS_ASYNC` above.
-            let value = unsafe { &*self.if_sync };
-
-            FutureIf {
-                if_sync: ManuallyDrop::new(value.clone()),
-            }
-        }
+        Self(self.0.clone())
     }
 }
 
@@ -253,15 +214,7 @@ pub fn choose<A: IsAsync, F: Future>(
     if_sync: impl FnOnce() -> F::Output,
     if_async: impl FnOnce() -> F,
 ) -> FutureIf<A, F> {
-    if A::IS_ASYNC {
-        FutureIf {
-            if_async: ManuallyDrop::new(if_async()),
-        }
-    } else {
-        FutureIf {
-            if_sync: ManuallyDrop::new(Some(if_sync())),
-        }
-    }
+    FutureIf(OneOf::new(move || Some(if_sync()), if_async))
 }
 
 /// Trait which describes how to allocate an asynchronous [`Future`] in [`alloc_future_if()`].

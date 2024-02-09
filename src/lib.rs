@@ -42,6 +42,7 @@ use core::{future::Future, marker::PhantomData};
 
 pub(crate) mod futures;
 pub(crate) mod helpers;
+mod one_of;
 
 /// Transforms an `async` function into a function which supports both synchronous and asynchronous
 /// execution depending on the value of a type parameter `A`.
@@ -213,6 +214,7 @@ pub use async_if_macro::async_ref;
 
 pub use futures::*;
 use helpers::poll_expecting_ready;
+pub use one_of::OneOf;
 
 mod private {
     /// Private trait which ensures that [`super::IsAsync`] can only be implemented in this crate.
