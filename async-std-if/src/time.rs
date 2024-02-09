@@ -25,7 +25,7 @@ async_trait! {
 test_all! {
     async fn test_sleep<T: Time in (Std, AsyncStd, Tokio)>() {
         let time_before = std::time::Instant::now();
-        T::sleep(Duration::from_secs(1)).await;
-        assert!(time_before.elapsed() >= Duration::from_secs(1));
+        T::sleep(Duration::from_millis(20)).await;
+        assert!(time_before.elapsed() >= Duration::from_millis(20));
     }
 }

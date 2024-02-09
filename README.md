@@ -78,3 +78,12 @@ async fn sleep<A: IsAsync>(duration: std::time::Duration) {
     .await
 }
 ```
+
+Using `std`, `async-std` or `tokio` dynamically:
+
+```rust
+use async_std_if::{Std, Time, Tokio};
+
+<Std as Time>::sleep(Duration::from_millis(100)).get();    // Synchronous!
+<Tokio as Time>::sleep(Duration::from_millis(100)).await;  // Asynchronous!
+```
